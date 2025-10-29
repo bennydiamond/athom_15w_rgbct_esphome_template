@@ -34,9 +34,6 @@ logger:
 udp:
   - id: id_udp_syslog_server
     addresses: ${syslog_ip_address}
-  - id: upd_tx_rx
-    addresses: 
-      - ${master_switch_ip}
 
 syslog:
   udp_id: id_udp_syslog_server
@@ -84,16 +81,6 @@ captive_portal:
 
 #web_server:
 #  version: 3
-
-packet_transport:
-  - platform: udp
-    id: packet_transport_udp
-    udp_id: upd_tx_rx
-    update_interval: 10s
-    rolling_code_enable: False
-    ping_pong_enable: False
-    providers:
-      - name: ${master_switch_provider}
 
 globals:
   - id: has_ever_connected
@@ -161,19 +148,6 @@ binary_sensor:
   - platform: status
     name: "Status"
     id: id_bin_status
-  - platform: packet_transport
-    name: ${master_switch_provider} imminent shutdown
-    id: ${master_switch_ota_entity}
-    remote_id: ${master_switch_ota_entity}
-    transport_id: packet_transport_udp
-    internal: False
-    provider: ${master_switch_provider}
-    entity_category: diagnostic
-    on_press:
-      - logger.log:
-          level: WARN
-          format: "Master switch is about to shutdown, forcing writing to flash."
-      - lambda: "global_preferences->sync(); // force sync to flash"
     
 text_sensor:
   - platform: wifi_info
