@@ -1,0 +1,717 @@
+substitutions:
+  default_log_level: WARN
+  dumb_mode_brightness: "35%"
+  min_kelvin: "2700K"
+  max_kelvin: "6500K"
+
+esphome:
+  name: ${name}
+  friendly_name: ${friendly_name}
+  min_version: 2025.9.0
+  name_add_mac_suffix: false
+  project:
+    name: teckin.sb53
+    version: '1.0'
+  on_boot:
+    priority: -10  # run after core init but before normal operation
+    then:
+      - script.execute: check_connectivity_boot
+    
+esp8266:
+  board: esp01_1m
+  restore_from_flash: true
+  
+preferences:
+  flash_write_interval: 2h
+
+# Enable logging
+logger:
+  id: id_logger
+  level: DEBUG
+  initial_level: ${default_log_level}
+  baud_rate: 0
+  
+udp:
+  - id: id_udp_syslog_server
+    addresses: ${syslog_ip_address}
+  - id: upd_tx_rx
+    addresses: 
+      - ${master_switch_ip}
+
+syslog:
+  udp_id: id_udp_syslog_server
+  time_id: sntp_time
+  port: 514
+  strip: true # remove color code
+  level: INFO
+
+time:
+  - platform: sntp
+    id: sntp_time
+    timezone: "America/Toronto"
+    servers:
+      - ${time_ntp_1}
+      - ${time_ntp_2}
+      - ${time_ntp_3}
+
+# Enable Home Assistant API
+api:
+  on_client_connected:
+    then:
+      - globals.set:
+          id: has_ever_connected
+          value: 'true'
+
+# Allow Over-The-Air updates
+ota:
+  - platform: esphome
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  fast_connect: true
+  use_address: ${device_ip_address}
+  manual_ip:
+    static_ip: ${device_ip_address}
+    gateway: ${device_ip_gateway}
+    subnet: ${device_ip_subnet}
+    dns1: ${device_ip_dns}
+  ap:
+    ssid: ${name}
+    password: !secret fallback_hotspot_password
+    
+captive_portal:
+
+#web_server:
+#  version: 3
+
+packet_transport:
+  - platform: udp
+    id: packet_transport_udp
+    udp_id: upd_tx_rx
+    update_interval: 10s
+    rolling_code_enable: False
+    ping_pong_enable: False
+    providers:
+      - name: ${master_switch_provider}
+
+globals:
+  - id: has_ever_connected
+    type: bool
+    restore_value: false
+    initial_value: 'false'
+
+script:
+  - id: check_connectivity_boot
+    mode: single
+    then:
+      - logger.log: "=== Boot-time connectivity check starting (script mode) ==="
+      - delay: 12s
+
+      - if:
+          condition:
+            lambda: 'return !id(has_ever_connected);'  # only run if never connected
+          then:
+            # CASE 1 — Wi-Fi not connected
+            - if:
+                condition:
+                  not:
+                    - wifi.connected:
+                then:
+                  - logger.log: "WiFi failed after 12s → engaging Dumb Mode"
+                  - light.turn_on:
+                      id: rgbct_light
+                      brightness: ${dumb_mode_brightness}
+                      color_temperature: 2000 K
+                      transition_length: 1s
+                else:
+                  # CASE 2 — Wi-Fi OK but API not connected
+                  - if:
+                      condition:
+                        not:
+                          - api.connected:
+                      then:
+                        - logger.log: "WiFi OK but API unavailable. Checking local time..."
+                        - if:
+                            condition:
+                              lambda: |-
+                                auto now = id(sntp_time).now();
+                                if (!now.is_valid()) return false;
+                                int hour = now.hour;
+                                return (hour >= 7 && hour < 17);
+                            then:
+                              - logger.log: "Assuming daytime → keeping light OFF."
+                            else:
+                              - logger.log: "Assuming night time → turning on Dumb Mode light."
+                              - light.turn_on:
+                                  id: rgbct_light
+                                  brightness: ${dumb_mode_brightness}
+                                  color_temperature: 2000 K
+                                  transition_length: 1s
+                      else:
+                        - logger.log: "Full connectivity before 12s → normal operation."
+
+button:
+  - platform: restart
+    name: "Device Restart"
+  - platform: safe_mode
+    name: "Device Restart (Safe Mode)"
+    
+binary_sensor:
+  - platform: status
+    name: "Status"
+    id: id_bin_status
+  - platform: packet_transport
+    name: ${master_switch_provider} imminent shutdown
+    id: ${master_switch_ota_entity}
+    remote_id: ${master_switch_ota_entity}
+    transport_id: packet_transport_udp
+    internal: False
+    provider: ${master_switch_provider}
+    entity_category: diagnostic
+    on_press:
+      - logger.log:
+          level: WARN
+          format: "Master switch is about to shutdown, forcing writing to flash."
+      - lambda: "global_preferences->sync(); // force sync to flash"
+    
+text_sensor:
+  - platform: wifi_info
+    ssid:
+      name: "WiFi SSID"
+      entity_category: diagnostic
+    ip_address:
+      name: "IP Address"
+      entity_category: diagnostic
+    mac_address:
+      name: "MAC Address"
+      entity_category: diagnostic
+
+  - platform: template
+    name: "Wifi Channel"
+    entity_category: diagnostic
+    lambda: |-
+      std::string out;
+      char buffer[10];
+      snprintf(buffer, sizeof(buffer), "%u", WiFi.channel());
+      out.append(buffer);
+      return out;
+    update_interval: 60s
+    
+switch:
+  - platform: template
+    name: Debug Log Level Enabled
+    id: id_switch_debug_logs_enabled
+    restore_mode : ALWAYS_OFF
+    lambda: 'return id(id_logger).get_log_level() == ESPHOME_LOG_LEVEL_DEBUG;'
+    entity_category: config
+    turn_on_action:
+      - logger.set_level: DEBUG
+      - logger.log:
+          level: INFO
+          format: "Debug logging enabled. Will revert to INFO in 6 hours or on reboot."
+      - delay: 24h
+      - switch.turn_off: id_switch_debug_logs_enabled
+
+    turn_off_action:
+      - logger.log:
+          level: INFO
+          format: "Debug logging disabled. Back to INFO level."
+      - logger.set_level: ${default_log_level}
+      
+output:
+  - platform: esp8266_pwm
+    id: red_output
+    pin: GPIO4
+#    min_power: 0.000499
+#    max_power: 1
+    zero_means_zero: true
+  - platform: esp8266_pwm
+    id: green_output
+    pin: GPIO12
+#    min_power: 0.000499
+#    max_power: 1
+    zero_means_zero: true
+  - platform: esp8266_pwm
+    id: blue_output
+    pin: GPIO14
+#    min_power: 0.000499
+#    max_power: 1
+    zero_means_zero: true
+  - platform: esp8266_pwm
+    id: white_output
+    pin: GPIO5
+    min_power: 0.01
+    max_power: 0.9
+    zero_means_zero: true
+  - platform: esp8266_pwm
+    id: ct_output
+    inverted: true
+    pin: GPIO13
+    min_power: 0.01
+    max_power: 0.9
+    zero_means_zero: true
+
+light:
+  - platform: rgbct
+    name: "Light"
+    id: rgbct_light
+    red: red_output
+    green: green_output
+    blue: blue_output
+    white_brightness: white_output
+    color_temperature: ct_output
+    cold_white_color_temperature: ${max_kelvin}
+    warm_white_color_temperature: ${min_kelvin}
+    color_interlock: true # avoids simultaneous RGB and CCT
+    initial_state:
+      state: on
+      color_mode: RGB_COLOR_TEMPERATURE
+      brightness: ${dumb_mode_brightness}
+      color_temperature: ${min_kelvin}
+    restore_mode: RESTORE_DEFAULT_OFF
+    effects:
+      - random:
+          name: Random Slow
+          transition_length: 5s
+          update_interval: 7s
+      - random:
+          name: Random Fast
+          transition_length: 2s
+          update_interval: 3s
+      - flicker:
+          name: Flicker
+          alpha: 95%
+          intensity: 1.5%
+      - lambda:
+          name: randomflicker
+          update_interval: 201 ms
+          lambda: |-
+            auto call = id(rgbct_light).turn_on();
+            float r = random_float() * 2.0f - 1.0f; 
+            r =  r * r * r;
+            call.set_transition_length(r);
+            //static double br=id(global_brightness);
+            call.set_brightness(0.7 + r/10);
+            call.set_publish(false);
+            call.set_save(false);
+            call.perform();
+      - lambda:
+          name: Chill Mode
+          update_interval: 70s
+          lambda: |-
+            auto call = id(rgbct_light).turn_on();
+            call.set_transition_length(55000);
+            call.set_white(0.0);
+            esphome::Color c = esphome::Color::random_color();
+            call.set_rgb((c.red%255)/255.0, (c.green%255)/255.0, (c.blue%255)/255.0);
+            call.set_publish(false);
+            call.set_save(false);
+            call.perform();
+      - lambda:
+          name: Chill Mode (Vibrant)
+          update_interval: 120s
+          lambda: |-
+            auto call = id(rgbct_light).turn_on();
+            call.set_transition_length(800);
+            call.set_white(0.0);
+            esphome::Color c = esphome::Color::random_color();
+            call.set_rgb((c.red%128)/255.0, (c.green%128)/255.0, (c.blue%128)/255.0);
+            call.set_publish(false);
+            call.set_save(false);
+            call.perform();
+      - lambda:
+          name: Disco
+          update_interval: 500ms
+          lambda: |-
+            auto call = id(rgbct_light).turn_on();
+            //call.set_transition_length(rand() % 400 + 1);
+            call.set_transition_length(500);
+            call.set_white(0.0);
+            esphome::Color c = esphome::Color::random_color();
+            call.set_rgb((c.red)/255.0, (c.green)/255.0, (c.blue)/255.0);
+            call.set_publish(false);
+            call.set_save(false);
+            call.perform();
+      - strobe:
+          name: Lightning
+          colors:
+            - state: True
+              brightness: 100%
+              red: 90%
+              green: 90%
+              blue: 100%
+              white: 0%
+              duration: 50ms
+            - state: False
+              duration: 50ms
+            - state: True
+              brightness: 100%
+              red: 90%
+              green: 90%
+              blue: 100%
+              white: 0%
+              duration: 160ms
+            - state: False
+              duration: 50ms
+            - state: True
+              brightness: 100%
+              red: 90%
+              green: 90%
+              blue: 100%
+              white: 0%
+              duration: 50ms
+            - state: False
+              duration: 3000ms
+      - strobe:
+          name: In Alarm
+          colors:
+            - state: True
+              red: 100%
+              blue: 0%
+              green: 0%
+              white: 0%
+              duration: 150ms
+            - state: False
+              duration: 100ms
+            - state: True
+              red: 100%
+              blue: 0%
+              green: 0%
+              white: 0%  
+              duration: 150ms
+            - state: False
+              duration: 100ms
+            - state: True
+              red: 0%
+              blue: 100%
+              green: 0%
+              white: 0%
+              duration: 150ms
+            - state: False
+              duration: 100ms
+            - state: True
+              red: 0%
+              blue: 100%
+              green: 0%
+              white: 0%
+              duration: 150ms
+            - state: False
+              duration: 100ms
+      - lambda:
+          name: Breathing
+          update_interval: 16s
+          lambda: |-
+            static int state = 0;
+            static int color = 1;
+            auto call = id(rgbct_light).turn_on(); //the id of your light
+            call.set_transition_length(15000);
+            if (state == 0) 
+            {
+            call.set_brightness(1.0);
+            }
+            else if (state == 1)
+            {
+            call.set_brightness(0.01);
+            }
+            call.perform();
+            state ++;
+            if (state == 2){
+            state = 0;
+            }
+      - lambda:
+          name: RGB Breathing
+          update_interval: 16s
+          lambda: |-
+            #define Color1 1.0, 0.0, 0.0 //These are the colors defined, feel free to change or extend the list
+            #define Color2 1.0, 0.5, 0.0 //if you extend the list, dont forget to add them in the switch loop below
+            #define Color3 1.0, 1.0, 0.0 //and remember to adjust the reset counter at the bottom
+            #define Color4 0.5, 1.0, 0.0
+            #define Color5 0.0, 1.0, 0.0
+            #define Color6 0.0, 1.0, 0.5
+            #define Color7 0.0, 1.0, 1.0
+            #define Color8 0.0, 0.5, 1.0
+            #define Color9 0.0, 0.0, 1.0
+            #define Color10 0.5, 0.0, 1.0
+            #define Color11 0.5, 0.0, 1.0
+            #define Color12 1.0, 0.0, 0.5
+            static int state = 0;
+            static int color = 1;
+            auto call = id(rgbct_light).turn_on(); //put the id for your light in here
+            call.set_white(0.0);
+            call.set_transition_length(15000);
+            if (state == 0) 
+            {
+            call.set_brightness(0.01);
+            
+            }
+            else if (state == 1)
+            {
+              switch(color)
+              {
+                case 1: call.set_rgb(Color1);
+                        break;
+                case 2: call.set_rgb(Color2);
+                        break;
+                case 3: call.set_rgb(Color3);
+                        break;
+                case 4: call.set_rgb(Color4);
+                        break;
+                case 5: call.set_rgb(Color5);
+                        break;
+                case 6: call.set_rgb(Color6);
+                        break;
+                case 7: call.set_rgb(Color7);
+                        break;
+                case 8: call.set_rgb(Color8);
+                        break;
+                case 9: call.set_rgb(Color9);
+                        break;
+                case 10: call.set_rgb(Color10);
+                          break;
+                case 11: call.set_rgb(Color11);
+                          break;
+                case 12: call.set_rgb(Color12);
+                          break;
+              }
+              call.set_brightness(1.0);
+            }
+            
+            state ++;
+            if (state == 2){
+            state = 0;
+            }
+            color++;
+            if(color == 7)
+            {
+              color = 1;
+            }
+            call.perform();
+      - automation:
+          name: Halloween
+          sequence:
+            - light.turn_on: # orange
+                id: rgbct_light
+                brightness: 80%
+                red: 100%
+                green: 41%
+                blue: 7%
+                white: 0%
+                transition_length: 2000ms
+            - delay: 4000ms
+            - light.turn_on: # deep purple
+                id: rgbct_light
+                brightness: 65%
+                red: 84%
+                green: 11%
+                blue: 100%
+                white: 0%
+                transition_length: 2000ms
+            - delay: 4000ms
+            - light.turn_on: # green
+                id: rgbct_light
+                brightness: 80%
+                red: 20%
+                green: 100%
+                blue: 0%
+                white: 0%
+                transition_length: 2000ms
+            - delay: 4000ms
+            - light.turn_on: # black (off)
+                id: rgbct_light
+                brightness: 0%
+                red: 100%
+                green: 60%
+                blue: 8%
+                white: 0%
+                transition_length: 1000ms
+            - delay: 2000ms
+      - automation:
+          name: Halloween2
+          sequence:
+            - light.turn_on: # orange
+                id: rgbct_light
+                brightness: 80%
+                red: 100%
+                green: 41%
+                blue: 7%
+                white: 0%
+                transition_length: 2000ms
+            - delay: 4000ms
+            - light.turn_on: # deep purple
+                id: rgbct_light
+                brightness: 65%
+                red: 84%
+                green: 11%
+                blue: 100%
+                white: 0%
+                transition_length: 2000ms
+            - delay: 4000ms
+            - light.turn_on: # black (off)
+                id: rgbct_light
+                brightness: 0%
+                red: 100%
+                green: 60%
+                blue: 8%
+                white: 0%
+                transition_length: 1000ms
+            - delay: 1500ms
+      - automation:
+          name: Halloween3
+          sequence:
+            - light.turn_on: # orange
+                id: rgbct_light
+                brightness: 80%
+                red: 100%
+                green: 41%
+                blue: 7%
+                white: 0%
+                transition_length: 2000ms
+            - delay: 3300ms
+            - light.turn_on: # deep purple
+                id: rgbct_light
+                brightness: 65%
+                red: 84%
+                green: 11%
+                blue: 100%
+                white: 0%
+                transition_length: 2000ms
+            - delay: 3300ms
+      - automation:
+          name: Christmas
+          sequence:
+            - light.turn_on: # red
+                id: rgbct_light
+                brightness: 80%
+                red: 100%
+                green: 0%
+                blue: 0%
+                white: 0%
+                transition_length: 2000ms
+            - delay: 4000ms
+            - light.turn_on: # green
+                id: rgbct_light
+                brightness: 80%
+                red: 0%
+                green: 100%
+                blue: 0%
+                white: 0%
+                transition_length: 2000ms
+            - delay: 4000ms
+            - light.turn_on: # white
+                id: rgbct_light
+                brightness: 90%
+                red: 0%
+                green: 0%
+                blue: 0%
+                white: 100%
+                transition_length: 2000ms
+            - delay: 4000ms
+
+      - automation:
+          name: Saint-Jean-Baptiste
+          sequence:
+            - light.turn_on: # blue
+                id: rgbct_light
+                brightness: 80%
+                red: 0%
+                green: 0%
+                blue: 100%
+                white: 0%
+                transition_length: 2000ms
+            - delay: 4000ms
+            - light.turn_on: # white
+                id: rgbct_light
+                brightness: 80%
+                red: 0%
+                green: 0%
+                blue: 0%
+                white: 100%
+                transition_length: 2000ms
+
+      - automation:
+          name: Canada Day
+          sequence:
+            - light.turn_on: # red
+                id: rgbct_light
+                brightness: 90%
+                red: 100%
+                green: 0%
+                blue: 0%
+                white: 0%
+                transition_length: 2000ms
+            - delay: 4000ms
+            - light.turn_on: # white
+                id: rgbct_light
+                brightness: 90%
+                red: 0%
+                green: 0%
+                blue: 0%
+                white: 100%
+                transition_length: 2000ms
+            - delay: 4000ms
+
+      - automation:
+          name: Valentine
+          sequence:
+            - light.turn_on: # pink
+                id: rgbct_light
+                brightness: 80%
+                red: 100%
+                green: 50%
+                blue: 75%
+                white: 0%
+                transition_length: 2000ms
+            - delay: 4000ms
+            - light.turn_on: # deep red
+                id: rgbct_light
+                brightness: 80%
+                red: 100%
+                green: 0%
+                blue: 20%
+                white: 0%
+                transition_length: 2000ms
+            - delay: 4000ms
+            - light.turn_on: # magenta
+                id: rgbct_light
+                brightness: 80%
+                red: 100%
+                green: 0%
+                blue: 100%
+                white: 0%
+                transition_length: 2000ms
+            - delay: 4000ms
+
+      - automation:
+          name: Candle
+          sequence:
+            - light.turn_on:
+                id: rgbct_light
+                brightness: 60%
+                red: 0%
+                green: 0%
+                blue: 0%
+                white: 70%
+                color_temperature: ${min_kelvin}
+                transition_length: 300ms
+            - delay: 500ms
+            - light.turn_on:
+                id: rgbct_light
+                brightness: 55%
+                red: 0%
+                green: 0%
+                blue: 0%
+                white: 60%
+                color_temperature: 3400K
+                transition_length: 300ms
+            - delay: 700ms
+            - light.turn_on:
+                id: rgbct_light
+                brightness: 65%
+                red: 0%
+                green: 0%
+                blue: 0%
+                white: 80%
+                color_temperature: 3100K
+                transition_length: 400ms
+            - delay: 600ms
