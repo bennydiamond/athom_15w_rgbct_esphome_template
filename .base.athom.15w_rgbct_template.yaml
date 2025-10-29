@@ -62,21 +62,6 @@ api:
 # Allow Over-The-Air updates
 ota:
   - platform: esphome
-
-wifi:
-  id: id_esphome_wifi
-  ssid: !secret wifi_ssid
-  password: !secret wifi_password
-  fast_connect: true
-  use_address: ${device_ip_address}
-  manual_ip:
-    static_ip: ${device_ip_address}
-    gateway: ${device_ip_gateway}
-    subnet: ${device_ip_subnet}
-    dns1: ${device_ip_dns}
-  ap:
-    ssid: ${name}
-    password: !secret fallback_hotspot_password
     
 captive_portal:
 
