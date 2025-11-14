@@ -134,6 +134,14 @@ binary_sensor:
   - platform: status
     name: "Status"
     id: id_bin_status
+
+sensor:
+  - platform: uptime
+    name: "Device Uptime"
+    id: uptime_sensor
+  - platform: wifi_signal
+    name: "WiFi Signal Strength"
+    update_interval: 60s
     
 text_sensor:
   - platform: wifi_info
