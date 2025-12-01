@@ -11,7 +11,7 @@ esphome:
   name_add_mac_suffix: false
   project:
     name: teckin.sb53
-    version: '1.0'
+    version: '1.1'
   on_boot:
     priority: -10  # run after core init but before normal operation
     then:
@@ -24,32 +24,12 @@ esp8266:
 preferences:
   flash_write_interval: 2h
 
-# Enable logging
-logger:
-  id: id_logger
-  level: DEBUG
-  initial_level: ${default_log_level}
-  baud_rate: 0
-  
-udp:
-  - id: id_udp_syslog_server
-    addresses: ${syslog_ip_address}
-
-syslog:
-  udp_id: id_udp_syslog_server
-  time_id: sntp_time
-  port: 514
-  strip: true # remove color code
-  level: INFO
-
-time:
-  - platform: sntp
-    id: sntp_time
-    timezone: "America/Toronto"
-    servers:
-      - ${time_ntp_1}
-      - ${time_ntp_2}
-      - ${time_ntp_3}
+packages:
+  remote_package_files:
+    url: https://github.com/bennydiamond/common_esphome_template/
+    files: [arduino.common.yaml]
+    ref: master
+    refresh: 1h
 
 # Enable Home Assistant API
 api:
@@ -59,10 +39,6 @@ api:
           id: has_ever_connected
           value: 'true'
 
-# Allow Over-The-Air updates
-ota:
-  - platform: esphome
-    
 captive_portal:
 
 #web_server:
@@ -108,7 +84,7 @@ script:
                         - if:
                             condition:
                               lambda: |-
-                                auto now = id(sntp_time).now();
+                                auto now = id(id_sntp_time).now();
                                 if (!now.is_valid()) return false;
                                 int hour = now.hour;
                                 return (hour >= 7 && hour < 17);
@@ -123,69 +99,6 @@ script:
                                   transition_length: 1s
                       else:
                         - logger.log: "Full connectivity before 12s → normal operation."
-
-button:
-  - platform: restart
-    name: "Device Restart"
-  - platform: safe_mode
-    name: "Device Restart (Safe Mode)"
-    
-binary_sensor:
-  - platform: status
-    name: "Status"
-    id: id_bin_status
-
-sensor:
-  - platform: uptime
-    name: "Device Uptime"
-    id: uptime_sensor
-  - platform: wifi_signal
-    name: "WiFi Signal Strength"
-    update_interval: 60s
-    
-text_sensor:
-  - platform: wifi_info
-    ssid:
-      name: "WiFi SSID"
-      entity_category: diagnostic
-    ip_address:
-      name: "IP Address"
-      entity_category: diagnostic
-    mac_address:
-      name: "MAC Address"
-      entity_category: diagnostic
-
-  - platform: template
-    name: "Wifi Channel"
-    entity_category: diagnostic
-    lambda: |-
-      std::string out;
-      char buffer[10];
-      snprintf(buffer, sizeof(buffer), "%u", WiFi.channel());
-      out.append(buffer);
-      return out;
-    update_interval: 60s
-    
-switch:
-  - platform: template
-    name: Debug Log Level Enabled
-    id: id_switch_debug_logs_enabled
-    restore_mode : ALWAYS_OFF
-    lambda: 'return id(id_logger).get_log_level() == ESPHOME_LOG_LEVEL_DEBUG;'
-    entity_category: config
-    turn_on_action:
-      - logger.set_level: DEBUG
-      - logger.log:
-          level: INFO
-          format: "Debug logging enabled. Will revert to INFO in 6 hours or on reboot."
-      - delay: 24h
-      - switch.turn_off: id_switch_debug_logs_enabled
-
-    turn_off_action:
-      - logger.log:
-          level: INFO
-          format: "Debug logging disabled. Back to INFO level."
-      - logger.set_level: ${default_log_level}
       
 output:
   - platform: esp8266_pwm
