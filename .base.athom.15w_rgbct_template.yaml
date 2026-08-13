@@ -3,6 +3,7 @@ substitutions:
   dumb_mode_brightness: "35%"
   min_kelvin: "2700K"
   max_kelvin: "6500K"
+  dumb_mode_color_temperature: ${min_kelvin}
   boot_connectivity_test_wait_time: "15s"
 
 esphome:
@@ -72,7 +73,7 @@ script:
                   - light.turn_on:
                       id: rgbct_light
                       brightness: ${dumb_mode_brightness}
-                      color_temperature: 2000 K
+                      color_temperature: ${dumb_mode_color_temperature}
                       transition_length: 1s
                 else:
                   # CASE 2 — Wi-Fi OK but API not connected
@@ -96,7 +97,7 @@ script:
                               - light.turn_on:
                                   id: rgbct_light
                                   brightness: ${dumb_mode_brightness}
-                                  color_temperature: 2000 K
+                                  color_temperature: ${dumb_mode_color_temperature}
                                   transition_length: 1s
                       else:
                         - logger.log: "Full connectivity before ${boot_connectivity_test_wait_time} → normal operation."
