@@ -106,20 +106,20 @@ output:
   - platform: esp8266_pwm
     id: red_output
     pin: GPIO4
-#    min_power: 0.000499
-#    max_power: 1
+    min_power: 0.000499
+    max_power: 1
     zero_means_zero: true
   - platform: esp8266_pwm
     id: green_output
     pin: GPIO12
-#    min_power: 0.000499
-#    max_power: 1
+    min_power: 0.000499
+    max_power: 1
     zero_means_zero: true
   - platform: esp8266_pwm
     id: blue_output
     pin: GPIO14
-#    min_power: 0.000499
-#    max_power: 1
+    min_power: 0.000499
+    max_power: 1
     zero_means_zero: true
   - platform: esp8266_pwm
     id: white_output
